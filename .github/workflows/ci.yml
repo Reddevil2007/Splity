@@ -75,8 +75,15 @@ jobs:
         with:
           terraform_version: "1.11.4"
       - name: Check formatting
-        run: terraform fmt -check -diff -recursive
+        run: terraform fmt -check -diff -recursive 2>&1 | tee tf.log; exit ${PIPESTATUS[0]}
       - name: Validate configuration
         run: |
-          terraform init -backend=false -input=false
-          terraform validate
+          terraform init -backend=false -input=false > /dev/null
+          terraform validate -no-color 2>&1 | tee -a tf.log; exit ${PIPESTATUS[0]}
+      - name: Report Terraform errors
+        if: failure()
+        run: |
+          split -l 15 tf.log chunk_
+          for c in chunk_*; do
+            echo "::error title=terraform::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' "$c")"
+          done
