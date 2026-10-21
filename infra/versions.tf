@@ -2,32 +2,25 @@ terraform {
   required_version = ">= 1.10.0"
 
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.70"
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.10"
     }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.6"
-    }
   }
 
-  # State lives in an S3 bucket so the pipeline and every teammate share one copy.
-  # The bucket name is passed in at "terraform init" time by the deploy workflow.
-  backend "s3" {}
+  # State lives in an Azure Storage blob container so the pipeline and every
+  # teammate share one copy. Its location is passed in at "terraform init" time.
+  backend "azurerm" {}
 }
 
-provider "aws" {
-  region = var.region
+provider "azurerm" {
+  features {}
 
-  default_tags {
-    tags = {
-      Project   = "SplitCloud"
-      ManagedBy = "Terraform"
-    }
-  }
+  # Resource providers are registered once by the setup script and the pipeline,
+  # so Terraform does not try (and wait) to register every provider itself.
+  resource_provider_registrations = "none"
 }

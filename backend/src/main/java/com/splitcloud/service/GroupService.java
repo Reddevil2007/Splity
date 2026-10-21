@@ -178,7 +178,7 @@ public class GroupService {
         return settlements.findWithMembersByGroupId(groupId).stream().map(GroupService::toView).toList();
     }
 
-    /** Everyone who currently owes money, across all groups. Read by the reminder Lambda. */
+    /** Everyone who currently owes money, across all groups. Feeds reminder jobs. */
     @Transactional(readOnly = true)
     public List<ReminderView> pendingReminders() {
         List<ReminderView> result = new ArrayList<>();

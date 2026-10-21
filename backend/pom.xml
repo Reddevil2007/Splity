@@ -14,7 +14,7 @@
     <groupId>com.splitcloud</groupId>
     <artifactId>splitcloud</artifactId>
     <version>1.0.0</version>
-    <!-- WAR, not executable JAR: deployed into an external Tomcat 10 on EC2 -->
+    <!-- WAR, not executable JAR: deployed into Tomcat 10.1 on Azure App Service -->
     <packaging>war</packaging>
     <name>SplitCloud API</name>
 

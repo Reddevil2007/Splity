@@ -1,6 +1,6 @@
-# Tears down every AWS resource Terraform created, to stop spending lab credit.
+# Tears down every Azure resource Terraform created, to stop spending credit.
 # Run it manually from the Actions tab and type "destroy" to confirm.
-name: Destroy AWS infrastructure
+name: Destroy Azure infrastructure
 
 on:
   workflow_dispatch:
@@ -9,11 +9,18 @@ on:
         description: 'Type "destroy" to delete all SplitCloud resources'
         required: true
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
-  AWS_REGION: us-east-1
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   TF_IN_AUTOMATION: "true"
+  TF_VAR_location: ${{ vars.AZURE_LOCATION || 'centralindia' }}
   TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
-  TF_VAR_lab_mode: ${{ vars.LAB_MODE || 'true' }}
 
 jobs:
   destroy:
@@ -23,30 +30,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: azure/login@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.4"
           terraform_wrapper: false
 
-      # The configuration references the WAR file; a placeholder is enough to plan a destroy.
-      - name: Placeholder WAR
-        run: mkdir -p backend/target && touch backend/target/splitcloud.war
-
       - name: Terraform destroy
         working-directory: infra
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_SA="sctf$(echo "$ARM_SUBSCRIPTION_ID" | tr -d '-' | cut -c1-16)"
           terraform init -input=false \
-            -backend-config="bucket=splitcloud-tfstate-$ACCOUNT_ID" \
-            -backend-config="key=splitcloud/terraform.tfstate" \
-            -backend-config="region=$AWS_REGION" \
-            -backend-config="use_lockfile=true"
+            -backend-config="resource_group_name=splitcloud-tfstate" \
+            -backend-config="storage_account_name=$STATE_SA" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=splitcloud.tfstate" \
+            -backend-config="use_oidc=true"
           terraform destroy -auto-approve -input=false

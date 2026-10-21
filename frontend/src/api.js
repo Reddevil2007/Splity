@@ -1,9 +1,12 @@
 // Thin client for the SplitCloud REST API.
-// Paths are relative ("/api/..."), so the same build works locally behind the
-// Vite proxy and in the cloud behind CloudFront: same origin, no CORS.
+// Locally, VITE_API_BASE is unset and calls go to "/api/...", which the Vite dev
+// proxy forwards to Spring Boot. In Azure, the pipeline builds with
+// VITE_API_BASE set to the App Service URL, and App Service allows this
+// frontend's origin through CORS (Cross-Origin Resource Sharing).
+const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
 
 async function request(path, { method = 'GET', body } = {}) {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}/api${path}`, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -15,7 +18,7 @@ async function request(path, { method = 'GET', body } = {}) {
   try {
     data = text ? JSON.parse(text) : null
   } catch {
-    // A non-JSON body usually means the request never reached the API (e.g. a 502 from CloudFront)
+    // A non-JSON body usually means the request never reached the API (e.g. a 502 or 503 from App Service while it restarts)
   }
   if (!res.ok) {
     throw new Error(data?.message ?? `The server could not be reached (HTTP ${res.status}). Try again in a minute.`)

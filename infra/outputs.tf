@@ -1,44 +1,34 @@
+output "resource_group" {
+  description = "Resource group holding every SplitCloud resource."
+  value       = azurerm_resource_group.main.name
+}
+
 output "app_url" {
-  description = "Open this in a browser: the SplitCloud app through CloudFront."
-  value       = local.app_url
+  description = "Open this in a browser: the React app on the storage static website."
+  value       = trimsuffix(azurerm_storage_account.web.primary_web_endpoint, "/")
 }
 
-output "cloudfront_distribution_id" {
-  description = "Used by the pipeline to invalidate cached index.html after a deploy."
-  value       = aws_cloudfront_distribution.main.id
+output "api_url" {
+  description = "Base URL of the Spring Boot API on App Service."
+  value       = "https://${azurerm_linux_web_app.api.default_hostname}"
 }
 
-output "frontend_bucket" {
-  description = "S3 bucket holding the React build."
-  value       = aws_s3_bucket.frontend.id
+output "web_app_name" {
+  description = "App Service name, used by the pipeline to deploy the WAR."
+  value       = azurerm_linux_web_app.api.name
 }
 
-output "artifacts_bucket" {
-  description = "S3 bucket holding release WAR files."
-  value       = aws_s3_bucket.artifacts.id
+output "storage_account_name" {
+  description = "Storage account whose $web container holds the frontend."
+  value       = azurerm_storage_account.web.name
 }
 
-output "app_server_public_ip" {
-  description = "Elastic IP of the EC2 application server."
-  value       = aws_eip.app.public_ip
+output "database_host" {
+  description = "Private hostname of the PostgreSQL server (resolves only inside the VNet)."
+  value       = azurerm_postgresql_flexible_server.main.fqdn
 }
 
-output "app_server_instance_id" {
-  description = "EC2 instance ID, for the console or EC2 Instance Connect."
-  value       = aws_instance.app.id
-}
-
-output "database_endpoint" {
-  description = "RDS endpoint, only reachable from inside the VPC."
-  value       = aws_db_instance.main.address
-}
-
-output "alerts_topic_arn" {
-  description = "SNS topic for alarms and reminders."
-  value       = aws_sns_topic.alerts.arn
-}
-
-output "dashboard_url" {
-  description = "CloudWatch dashboard."
-  value       = "https://${var.region}.console.aws.amazon.com/cloudwatch/home?region=${var.region}#dashboards:name=${aws_cloudwatch_dashboard.main.dashboard_name}"
+output "application_insights_name" {
+  description = "Application Insights resource with the availability test."
+  value       = azurerm_application_insights.main.name
 }

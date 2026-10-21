@@ -64,7 +64,7 @@ jobs:
         run: npm run build
 
   infrastructure:
-    name: Infrastructure (Terraform, Lambda)
+    name: Infrastructure (Terraform)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -80,5 +80,3 @@ jobs:
         run: |
           terraform init -backend=false -input=false
           terraform validate
-      - name: Syntax-check Lambda functions
-        run: python3 -m py_compile lambda/*.py

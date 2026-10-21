@@ -13,7 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Operational endpoints: health check, reminder feed for the Lambda, and demo data. */
+/** Operational endpoints: health check, pending-dues feed, and demo data. */
 @RestController
 @RequestMapping("/api")
 public class SystemController {
@@ -27,8 +27,9 @@ public class SystemController {
     }
 
     /**
-     * Polled every minute by the health-check Lambda. Returns 503 if the database
-     * is unreachable, which makes the Lambda fail and the CloudWatch alarm fire.
+     * Probed by App Service's health check and by the Application Insights
+     * availability test. Returns 503 if the database is unreachable, which fails
+     * the test and fires the "api-down" alert.
      */
     @GetMapping("/health")
     public ResponseEntity<Map<String, Object>> health() {
@@ -47,7 +48,7 @@ public class SystemController {
         }
     }
 
-    /** Read by the scheduled reminder Lambda, which emails a dues digest through SNS. */
+    /** Everyone who currently owes money, across all groups (for reminder jobs). */
     @GetMapping("/reminders/pending")
     public List<ReminderView> pendingReminders() {
         return service.pendingReminders();

@@ -1,178 +1,204 @@
-# Observability: one SNS topic for notifications, CloudWatch alarms, and a dashboard.
+# Observability: Log Analytics + Application Insights, an availability test that
+# probes the API from three continents, and alerts that email the team.
 
-resource "aws_sns_topic" "alerts" {
-  name = "${var.project}-alerts"
+resource "azurerm_log_analytics_workspace" "main" {
+  name                = "${var.project}-logs"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+  tags                = local.tags
 }
 
-# AWS sends a confirmation email first; alerts arrive only after you click "Confirm subscription".
-resource "aws_sns_topic_subscription" "email" {
-  count = var.alert_email == "" ? 0 : 1
-
-  topic_arn = aws_sns_topic.alerts.arn
-  protocol  = "email"
-  endpoint  = var.alert_email
+resource "azurerm_application_insights" "main" {
+  name                = "${var.project}-insights"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  workspace_id        = azurerm_log_analytics_workspace.main.id
+  application_type    = "java"
+  tags                = local.tags
 }
 
-# ---------- alarms ----------
+# App Service platform logs (HTTP requests, console output) into Log Analytics.
+resource "azurerm_monitor_diagnostic_setting" "api" {
+  name                       = "send-to-log-analytics"
+  target_resource_id         = azurerm_linux_web_app.api.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
 
-# Fires when the health-check Lambda fails twice in a row (about two minutes of downtime).
-resource "aws_cloudwatch_metric_alarm" "api_down" {
-  alarm_name          = "${var.project}-api-down"
-  alarm_description   = "The SplitCloud API is not answering /api/health through CloudFront"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Errors"
-  dimensions          = { FunctionName = aws_lambda_function.healthcheck.function_name }
-  statistic           = "Sum"
-  period              = 60
-  evaluation_periods  = 2
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  enabled_log {
+    category = "AppServiceHTTPLogs"
+  }
+
+  enabled_log {
+    category = "AppServiceConsoleLogs"
+  }
+
+  enabled_log {
+    category = "AppServiceAppLogs"
+  }
 }
 
-resource "aws_cloudwatch_metric_alarm" "ec2_cpu_high" {
-  alarm_name          = "${var.project}-ec2-cpu-high"
-  alarm_description   = "Application server CPU above 80% for 10 minutes"
-  namespace           = "AWS/EC2"
-  metric_name         = "CPUUtilization"
-  dimensions          = { InstanceId = aws_instance.app.id }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 2
-  threshold           = 80
-  comparison_operator = "GreaterThanThreshold"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+# Synthetic monitoring: every 5 minutes, three Azure regions call /api/health
+# and check for HTTP 200 with "status":"UP" in the body.
+resource "azurerm_application_insights_standard_web_test" "health" {
+  name                    = "${var.project}-api-health"
+  location                = azurerm_resource_group.main.location
+  resource_group_name     = azurerm_resource_group.main.name
+  application_insights_id = azurerm_application_insights.main.id
+  description             = "Calls /api/health, which also checks the database"
+  frequency               = 300
+  timeout                 = 30
+  enabled                 = true
+  retry_enabled           = true
+  geo_locations           = ["apac-sg-sin-azr", "emea-nl-ams-azr", "us-va-ash-azr"]
+
+  request {
+    url = "https://${azurerm_linux_web_app.api.default_hostname}/api/health"
+  }
+
+  validation_rules {
+    expected_status_code = 200
+
+    content {
+      content_match = "\"status\":\"UP\""
+    }
+  }
+
+  lifecycle {
+    # Azure adds a hidden-link tag to every web test.
+    ignore_changes = [tags]
+  }
 }
 
-resource "aws_cloudwatch_metric_alarm" "ec2_status_check" {
-  alarm_name          = "${var.project}-ec2-status-check"
-  alarm_description   = "Application server failed an EC2 status check"
-  namespace           = "AWS/EC2"
-  metric_name         = "StatusCheckFailed"
-  dimensions          = { InstanceId = aws_instance.app.id }
-  statistic           = "Maximum"
-  period              = 60
-  evaluation_periods  = 2
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+# ---------- notifications ----------
+
+resource "azurerm_monitor_action_group" "team" {
+  name                = "${var.project}-team"
+  resource_group_name = azurerm_resource_group.main.name
+  short_name          = "splitcloud"
+  tags                = local.tags
+
+  dynamic "email_receiver" {
+    for_each = var.alert_email == "" ? [] : [var.alert_email]
+    content {
+      name                    = "team-email"
+      email_address           = email_receiver.value
+      use_common_alert_schema = true
+    }
+  }
 }
 
-resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
-  alarm_name          = "${var.project}-rds-cpu-high"
-  alarm_description   = "Database CPU above 80% for 10 minutes"
-  namespace           = "AWS/RDS"
-  metric_name         = "CPUUtilization"
-  dimensions          = { DBInstanceIdentifier = aws_db_instance.main.identifier }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 2
-  threshold           = 80
-  comparison_operator = "GreaterThanThreshold"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+# ---------- alerts ----------
+
+resource "azurerm_monitor_metric_alert" "api_down" {
+  name                = "${var.project}-api-down"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_application_insights_standard_web_test.health.id, azurerm_application_insights.main.id]
+  description         = "The API failed its health check from 2 or more regions"
+  severity            = 1
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+  tags                = local.tags
+
+  application_insights_web_test_location_availability_criteria {
+    web_test_id           = azurerm_application_insights_standard_web_test.health.id
+    component_id          = azurerm_application_insights.main.id
+    failed_location_count = 2
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.team.id
+  }
 }
 
-resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
-  alarm_name          = "${var.project}-rds-storage-low"
-  alarm_description   = "Database has less than 2 GB of free storage"
-  namespace           = "AWS/RDS"
-  metric_name         = "FreeStorageSpace"
-  dimensions          = { DBInstanceIdentifier = aws_db_instance.main.identifier }
-  statistic           = "Minimum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 2147483648
-  comparison_operator = "LessThanThreshold"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+resource "azurerm_monitor_metric_alert" "api_5xx" {
+  name                = "${var.project}-api-server-errors"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_linux_web_app.api.id]
+  description         = "More than 5 HTTP 5xx responses from the API in 5 minutes"
+  severity            = 2
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+  tags                = local.tags
+
+  criteria {
+    metric_namespace = "Microsoft.Web/sites"
+    metric_name      = "Http5xx"
+    aggregation      = "Total"
+    operator         = "GreaterThan"
+    threshold        = 5
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.team.id
+  }
 }
 
-resource "aws_cloudwatch_metric_alarm" "reminder_errors" {
-  alarm_name          = "${var.project}-reminder-failed"
-  alarm_description   = "The daily dues reminder Lambda failed"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Errors"
-  dimensions          = { FunctionName = aws_lambda_function.reminder.function_name }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+resource "azurerm_monitor_metric_alert" "plan_cpu" {
+  name                = "${var.project}-app-cpu-high"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_service_plan.main.id]
+  description         = "App Service plan CPU above 80% for 15 minutes"
+  severity            = 3
+  frequency           = "PT5M"
+  window_size         = "PT15M"
+  tags                = local.tags
+
+  criteria {
+    metric_namespace = "Microsoft.Web/serverfarms"
+    metric_name      = "CpuPercentage"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.team.id
+  }
 }
 
-# ---------- dashboard ----------
+resource "azurerm_monitor_metric_alert" "db_cpu" {
+  name                = "${var.project}-db-cpu-high"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_postgresql_flexible_server.main.id]
+  description         = "Database CPU above 80% for 15 minutes"
+  severity            = 3
+  frequency           = "PT5M"
+  window_size         = "PT15M"
+  tags                = local.tags
 
-locals {
-  dashboard_widgets = [
-    {
-      title = "API health checks (errors mean the API is down)"
-      metrics = [
-        ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.healthcheck.function_name, { stat = "Sum", label = "Checks" }],
-        ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.healthcheck.function_name, { stat = "Sum", label = "Failed checks", color = "#d62728" }],
-      ]
-    },
-    {
-      title = "CloudFront requests and error rate"
-      metrics = [
-        ["AWS/CloudFront", "Requests", "DistributionId", aws_cloudfront_distribution.main.id, "Region", "Global", { stat = "Sum" }],
-        ["AWS/CloudFront", "5xxErrorRate", "DistributionId", aws_cloudfront_distribution.main.id, "Region", "Global", { stat = "Average", yAxis = "right" }],
-      ]
-    },
-    {
-      title   = "EC2 application server CPU %"
-      metrics = [["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.app.id, { stat = "Average" }]]
-    },
-    {
-      title = "RDS PostgreSQL CPU % and connections"
-      metrics = [
-        ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.identifier, { stat = "Average" }],
-        ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.identifier, { stat = "Average", yAxis = "right" }],
-      ]
-    },
-  ]
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "cpu_percent"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.team.id
+  }
 }
 
-resource "aws_cloudwatch_dashboard" "main" {
-  dashboard_name = "${var.project}-overview"
-  dashboard_body = jsonencode({
-    widgets = [
-      for index, widget in local.dashboard_widgets : {
-        type   = "metric"
-        x      = (index % 2) * 12
-        y      = floor(index / 2) * 6
-        width  = 12
-        height = 6
-        properties = {
-          title   = widget.title
-          region  = var.region
-          view    = "timeSeries"
-          period  = 60
-          metrics = widget.metrics
-        }
-      }
-    ]
-  })
-}
+resource "azurerm_monitor_metric_alert" "db_storage" {
+  name                = "${var.project}-db-storage-high"
+  resource_group_name = azurerm_resource_group.main.name
+  scopes              = [azurerm_postgresql_flexible_server.main.id]
+  description         = "Database storage more than 80% used"
+  severity            = 2
+  frequency           = "PT15M"
+  window_size         = "PT1H"
+  tags                = local.tags
 
-# ---------- cost ----------
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "storage_percent"
+    aggregation      = "Maximum"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
 
-resource "aws_budgets_budget" "monthly" {
-  count = var.create_budget && var.alert_email != "" ? 1 : 0
-
-  name         = "${var.project}-monthly"
-  budget_type  = "COST"
-  limit_amount = tostring(var.budget_limit_usd)
-  limit_unit   = "USD"
-  time_unit    = "MONTHLY"
-
-  notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 80
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_email_addresses = [var.alert_email]
+  action {
+    action_group_id = azurerm_monitor_action_group.team.id
   }
 }

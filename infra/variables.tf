@@ -1,7 +1,7 @@
-variable "region" {
-  description = "AWS region. AWS Academy Learner Lab only allows us-east-1 and us-west-2."
+variable "location" {
+  description = "Azure region. Azure for Students only allows a few regions; the setup script picks an allowed one."
   type        = string
-  default     = "us-east-1"
+  default     = "centralindia"
 }
 
 variable "project" {
@@ -10,56 +10,20 @@ variable "project" {
   default     = "splitcloud"
 }
 
-variable "lab_mode" {
-  description = "true for AWS Academy Learner Lab accounts, which cannot create IAM roles and must use the provided LabRole / LabInstanceProfile."
-  type        = bool
-  default     = true
-}
-
 variable "alert_email" {
-  description = "Email address subscribed to alarm and reminder notifications. Leave empty to skip."
+  description = "Email address that receives alert notifications. Leave empty to skip."
   type        = string
   default     = ""
 }
 
-variable "instance_type" {
-  description = "EC2 instance type for the Tomcat application server."
+variable "app_service_sku" {
+  description = "App Service plan size. B1 is the smallest tier that supports VNet integration and Always On."
   type        = string
-  default     = "t3.micro"
+  default     = "B1"
 }
 
-variable "db_instance_class" {
-  description = "RDS instance class for PostgreSQL."
+variable "db_sku" {
+  description = "PostgreSQL Flexible Server compute size."
   type        = string
-  default     = "db.t3.micro"
-}
-
-variable "war_path" {
-  description = "Path to the WAR built by Maven."
-  type        = string
-  default     = "../backend/target/splitcloud.war"
-}
-
-variable "tomcat_version" {
-  description = "Apache Tomcat 10.1 release installed on the EC2 instance."
-  type        = string
-  default     = "10.1.31"
-}
-
-variable "ssh_key_name" {
-  description = "Optional EC2 key pair name for SSH (in Learner Lab this is usually vockey). Browser-based EC2 Instance Connect works without it."
-  type        = string
-  default     = ""
-}
-
-variable "create_budget" {
-  description = "Create an AWS Budgets cost alert. Learner Lab accounts usually cannot, so it is off by default."
-  type        = bool
-  default     = false
-}
-
-variable "budget_limit_usd" {
-  description = "Monthly budget in USD used when create_budget is true."
-  type        = number
-  default     = 20
+  default     = "B_Standard_B1ms"
 }

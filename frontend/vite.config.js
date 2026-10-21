@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     // Local development: forward API calls to Spring Boot so the browser sees one
     // origin and no CORS (Cross-Origin Resource Sharing) setup is needed.
-    // In the cloud, CloudFront does the same job by routing /api/* to EC2.
+    // In Azure the frontend calls App Service directly (see src/api.js).
     proxy: { '/api': 'http://localhost:8080' },
   },
   test: {

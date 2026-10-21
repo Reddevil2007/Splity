@@ -1,46 +1,47 @@
-# Managed PostgreSQL on RDS (Relational Database Service), in the private subnets.
+# Azure Database for PostgreSQL Flexible Server: managed PostgreSQL 16,
+# injected into the private database subnet with public network access disabled.
 
 resource "random_password" "db" {
   length  = 24
   special = false
 }
 
-resource "aws_db_subnet_group" "main" {
-  name_prefix = "${var.project}-db-"
-  subnet_ids  = aws_subnet.private[*].id
+resource "azurerm_postgresql_flexible_server" "main" {
+  name                = "${var.project}-db-${local.suffix}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tags                = local.tags
 
-  tags = {
-    Name = "${var.project}-db-subnets"
+  version  = "16"
+  sku_name = var.db_sku
+
+  storage_mb   = 32768
+  storage_tier = "P4"
+
+  administrator_login    = "splitcloud"
+  administrator_password = random_password.db.result
+
+  delegated_subnet_id           = azurerm_subnet.db.id
+  private_dns_zone_id           = azurerm_private_dns_zone.postgres.id
+  public_network_access_enabled = false
+
+  backup_retention_days        = 7
+  geo_redundant_backup_enabled = false
+
+  lifecycle {
+    # Azure picks an availability zone on create; don't fight it afterwards.
+    ignore_changes = [zone]
   }
+
+  depends_on = [
+    azurerm_private_dns_zone_virtual_network_link.postgres,
+    azurerm_subnet_network_security_group_association.db,
+  ]
 }
 
-resource "aws_db_instance" "main" {
-  identifier_prefix = "${var.project}-db-"
-
-  engine         = "postgres"
-  engine_version = "16"
-  instance_class = var.db_instance_class
-
-  allocated_storage = 20
-  storage_type      = "gp2"
-
-  db_name  = "splitcloud"
-  username = "splitcloud"
-  password = random_password.db.result
-
-  db_subnet_group_name   = aws_db_subnet_group.main.name
-  vpc_security_group_ids = [aws_security_group.db.id]
-  publicly_accessible    = false
-  multi_az               = false
-
-  # Demo settings: no backups to keep, quick teardown. A production database
-  # would keep automated backups, a final snapshot and deletion protection.
-  backup_retention_period = 0
-  skip_final_snapshot     = true
-  deletion_protection     = false
-  apply_immediately       = true
-
-  tags = {
-    Name = "${var.project}-postgres"
-  }
+resource "azurerm_postgresql_flexible_server_database" "app" {
+  name      = "splitcloud"
+  server_id = azurerm_postgresql_flexible_server.main.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
 }

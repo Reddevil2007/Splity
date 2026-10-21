@@ -1,29 +1,38 @@
 # Continuous Deployment: every push to main (or a manual "Run workflow") builds
-# the app, provisions/updates the AWS infrastructure with Terraform, publishes
-# the frontend and releases the backend.
+# the app, provisions/updates the Azure infrastructure with Terraform, deploys
+# the WAR to App Service and publishes the frontend to the storage static website.
 #
-# Required repository secrets (Settings > Secrets and variables > Actions):
-#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
-#   (Learner Lab: copy all three from "AWS Details"; they expire when the lab session ends)
-# Optional repository variables:
-#   ALERT_EMAIL  email address for alarms and the daily dues digest
-#   LAB_MODE     "false" for a normal AWS account (default "true" for Learner Lab)
-name: Deploy to AWS
+# Authentication uses OIDC (OpenID Connect) federation: GitHub proves its identity
+# to Azure with a short-lived token, so no password or key is stored anywhere.
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_LOCATION
+# Optional:
+#   ALERT_EMAIL   email address that receives alerts
+name: Deploy to Azure
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 concurrency:
-  group: deploy-aws
+  group: deploy-azure
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  LOCATION: ${{ vars.AZURE_LOCATION || 'centralindia' }}
   TF_IN_AUTOMATION: "true"
+  TF_VAR_location: ${{ vars.AZURE_LOCATION || 'centralindia' }}
   TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
-  TF_VAR_lab_mode: ${{ vars.LAB_MODE || 'true' }}
 
 jobs:
   deploy:
@@ -32,16 +41,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check AWS credentials are set
-        env:
-          KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      - name: Check Azure settings are present
         run: |
-          if [ -z "$KEY_ID" ]; then
-            echo "::error::Add AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN as repository secrets, then re-run."
+          if [ -z "$ARM_CLIENT_ID" ] || [ -z "$ARM_TENANT_ID" ] || [ -z "$ARM_SUBSCRIPTION_ID" ]; then
+            echo "::error::Add AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and AZURE_LOCATION as repository variables, then re-run."
             exit 1
           fi
 
-      # ---------- build ----------
+      # ---------- build the backend ----------
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -51,37 +58,31 @@ jobs:
         working-directory: backend
         run: mvn -B package
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-
       # ---------- infrastructure ----------
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Sign in to Azure (OIDC, no stored secret)
+        uses: azure/login@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Create the Terraform state bucket if it does not exist
+      - name: Register resource providers and create the Terraform state store
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          BUCKET="splitcloud-tfstate-$ACCOUNT_ID"
-          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
-            aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
-            aws s3api put-public-access-block --bucket "$BUCKET" \
-              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          for p in Microsoft.Web Microsoft.DBforPostgreSQL Microsoft.Insights Microsoft.OperationalInsights \
+                   Microsoft.AlertsManagement Microsoft.Storage Microsoft.Network; do
+            az provider register --namespace "$p" --wait
+          done
+          STATE_RG="splitcloud-tfstate"
+          STATE_SA="sctf$(echo "$ARM_SUBSCRIPTION_ID" | tr -d '-' | cut -c1-16)"
+          az group create --name "$STATE_RG" --location "$LOCATION" --output none
+          if ! az storage account show --name "$STATE_SA" --resource-group "$STATE_RG" --output none 2>/dev/null; then
+            az storage account create --name "$STATE_SA" --resource-group "$STATE_RG" --location "$LOCATION" \
+              --sku Standard_LRS --kind StorageV2 --min-tls-version TLS1_2 --allow-blob-public-access false --output none
           fi
-          echo "TF_STATE_BUCKET=$BUCKET" >> "$GITHUB_ENV"
+          KEY=$(az storage account keys list --account-name "$STATE_SA" --resource-group "$STATE_RG" --query "[0].value" -o tsv)
+          az storage container create --name tfstate --account-name "$STATE_SA" --account-key "$KEY" --output none
+          echo "STATE_RG=$STATE_RG" >> "$GITHUB_ENV"
+          echo "STATE_SA=$STATE_SA" >> "$GITHUB_ENV"
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -92,16 +93,17 @@ jobs:
         working-directory: infra
         run: |
           terraform init -input=false \
-            -backend-config="bucket=$TF_STATE_BUCKET" \
-            -backend-config="key=splitcloud/terraform.tfstate" \
-            -backend-config="region=$AWS_REGION" \
-            -backend-config="use_lockfile=true"
+            -backend-config="resource_group_name=$STATE_RG" \
+            -backend-config="storage_account_name=$STATE_SA" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=splitcloud.tfstate" \
+            -backend-config="use_oidc=true"
 
       - name: Terraform plan
         working-directory: infra
         run: terraform plan -input=false -out=tfplan
 
-      - name: Terraform apply (first run takes about 15-20 minutes)
+      - name: Terraform apply (first run takes about 10-15 minutes)
         working-directory: infra
         run: terraform apply -input=false tfplan
 
@@ -109,37 +111,55 @@ jobs:
         working-directory: infra
         run: |
           {
+            echo "RESOURCE_GROUP=$(terraform output -raw resource_group)"
+            echo "WEB_APP=$(terraform output -raw web_app_name)"
+            echo "API_URL=$(terraform output -raw api_url)"
             echo "APP_URL=$(terraform output -raw app_url)"
-            echo "FRONTEND_BUCKET=$(terraform output -raw frontend_bucket)"
-            echo "DISTRIBUTION_ID=$(terraform output -raw cloudfront_distribution_id)"
-            echo "DASHBOARD_URL=$(terraform output -raw dashboard_url)"
+            echo "STORAGE_ACCOUNT=$(terraform output -raw storage_account_name)"
           } >> "$GITHUB_ENV"
 
       # ---------- release ----------
-      - name: Publish frontend to S3
+      - name: Deploy the WAR to App Service (Tomcat 10.1)
         run: |
-          # Hashed asset files never change, so browsers and CloudFront may cache them for a year.
-          aws s3 sync frontend/dist "s3://$FRONTEND_BUCKET" --delete \
-            --exclude index.html --cache-control "public,max-age=31536000,immutable"
+          az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$WEB_APP" \
+            --src-path backend/target/splitcloud.war --type war --restart true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend against the deployed API
+        working-directory: frontend
+        env:
+          VITE_API_BASE: ${{ env.API_URL }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish frontend to the storage static website
+        run: |
+          KEY=$(az storage account keys list --account-name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query "[0].value" -o tsv)
+          # Hashed asset files never change, so browsers may cache them for a year.
+          az storage blob upload-batch --account-name "$STORAGE_ACCOUNT" --account-key "$KEY" \
+            --destination '$web' --source frontend/dist --overwrite --output none \
+            --content-cache-control "public, max-age=31536000, immutable" --pattern "assets/*"
           # index.html must always be revalidated so users pick up new asset names.
-          aws s3 cp frontend/dist/index.html "s3://$FRONTEND_BUCKET/index.html" \
-            --cache-control "no-cache" --content-type "text/html"
+          az storage blob upload --account-name "$STORAGE_ACCOUNT" --account-key "$KEY" \
+            --container-name '$web' --name index.html --file frontend/dist/index.html --overwrite \
+            --content-type "text/html" --content-cache-control "no-cache" --output none
 
-      - name: Invalidate CloudFront cache for index.html
-        run: aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/" "/index.html"
-
-      # The new WAR was uploaded by Terraform; the EC2 instance picks it up within 30 s.
       - name: Smoke test (waits for the API to report healthy)
         run: |
-          for attempt in $(seq 1 60); do
-            if curl -fsS "$APP_URL/api/health" | grep -q '"status":"UP"'; then
+          for attempt in $(seq 1 40); do
+            if curl -fsS --max-time 20 "$API_URL/api/health" | grep -q '"status":"UP"'; then
               echo "API healthy after $attempt checks"
               exit 0
             fi
-            echo "waiting for API ($attempt/60)"
+            echo "waiting for API ($attempt/40)"
             sleep 15
           done
-          echo "::error::API did not become healthy within 15 minutes. Check the EC2 instance (log: /var/log/splitcloud-setup.log)."
+          echo "::error::API did not become healthy within 10 minutes. Check App Service > Log stream in the Azure portal."
           exit 1
 
       - name: Summary
@@ -149,5 +169,6 @@ jobs:
             echo "## SplitCloud deployment"
             echo ""
             echo "- App: ${APP_URL:-not available}"
-            echo "- CloudWatch dashboard: ${DASHBOARD_URL:-not available}"
+            echo "- API health: ${API_URL:-not available}/api/health"
+            echo "- Resource group: ${RESOURCE_GROUP:-not available}"
           } >> "$GITHUB_STEP_SUMMARY"
