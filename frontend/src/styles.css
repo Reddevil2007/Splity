@@ -425,3 +425,9 @@ label { font-size: 0.9375rem; }
   .facts { grid-template-columns: 1fr; }
 }
 .payment-row .row-actions { gap: 16px; }
+
+/* Payment QR upload */
+.qr-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 0.875rem; }
+.qr-upload .link-btn { font-size: 0.875rem; }
+.qr-status { color: var(--credit); font-weight: 600; overflow-wrap: anywhere; }
+.qr-upload .field-error { flex-basis: 100%; margin: 0; }

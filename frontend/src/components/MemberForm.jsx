@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api.js'
+import QrUpload from './QrUpload.jsx'
 
 const EMPTY = { name: '', email: '', upiId: '' }
 
@@ -42,6 +43,7 @@ export default function MemberForm({ groupId, onAdded }) {
       <input aria-label="Name" placeholder="Name" value={form.name} onChange={update('name')} required maxLength={60} />
       <input aria-label="Email" type="email" placeholder="Email (for reminders)" value={form.email} onChange={update('email')} />
       <input aria-label="UPI ID" placeholder="UPI ID, e.g. name@okaxis" value={form.upiId} onChange={update('upiId')} />
+      <QrUpload onRead={({ upiId, name }) => setForm((f) => ({ ...f, upiId, name: f.name || name }))} />
       <div className="form-actions">
         <button type="submit" className="btn" disabled={saving}>{saving ? 'Adding…' : 'Add person'}</button>
         <button type="button" className="link-btn" onClick={() => setOpen(false)}>Cancel</button>

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api.js'
+import QrUpload from './QrUpload.jsx'
 
 /** Edit a person's name and contact details, or remove someone added by mistake. */
 export default function MemberEditor({ groupId, member, onDone }) {
@@ -46,6 +47,7 @@ export default function MemberEditor({ groupId, member, onDone }) {
       <input aria-label="Name" placeholder="Name" value={form.name} onChange={update('name')} required maxLength={60} />
       <input aria-label="Email" type="email" placeholder="Email" value={form.email} onChange={update('email')} />
       <input aria-label="UPI ID" placeholder="UPI ID, e.g. name@okaxis" value={form.upiId} onChange={update('upiId')} />
+      <QrUpload onRead={({ upiId, name }) => setForm((f) => ({ ...f, upiId, name: f.name || name }))} />
       <div className="form-actions">
         <button type="submit" className="btn" disabled={busy}>Save</button>
         <button type="button" className="link-btn" onClick={() => onDone(false)}>Cancel</button>
