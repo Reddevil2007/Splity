@@ -1,11 +1,13 @@
 package com.splitcloud.web;
 
+import com.splitcloud.domain.ExpenseCategory;
 import com.splitcloud.domain.SplitType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -41,13 +43,26 @@ public final class Dtos {
             @Positive(message = "Amount must be greater than zero") long amountPaise,
             @NotNull(message = "Choose who paid") Long payerId,
             @NotNull SplitType splitType,
-            @NotEmpty(message = "Pick at least one participant") @Valid List<ParticipantRequest> participants) {
+            @NotEmpty(message = "Pick at least one participant") @Valid List<ParticipantRequest> participants,
+            ExpenseCategory category,
+            LocalDate spentOn) {
+    }
+
+    /** Edits the parts of an expense that don't affect the split. Null fields are left unchanged. */
+    public record UpdateExpenseRequest(
+            @Size(min = 1, max = 120, message = "Description must be 1 to 120 characters") String description,
+            ExpenseCategory category,
+            LocalDate spentOn) {
     }
 
     public record RecordSettlementRequest(
             @NotNull Long fromMemberId,
             @NotNull Long toMemberId,
-            @Positive(message = "Amount must be greater than zero") long amountPaise) {
+            @Positive(message = "Amount must be greater than zero") long amountPaise,
+            LocalDate paidOn) {
+    }
+
+    public record UpdateSettlementRequest(@NotNull(message = "Choose a date") LocalDate paidOn) {
     }
 
     // ---------- responses ----------
@@ -66,6 +81,7 @@ public final class Dtos {
     }
 
     public record ExpenseView(long id, String description, long amountPaise, SplitType splitType,
+                              ExpenseCategory category, LocalDate spentOn,
                               long payerId, String payerName, Instant createdAt, List<SplitView> splits) {
     }
 
@@ -79,7 +95,7 @@ public final class Dtos {
     }
 
     public record SettlementView(long id, long fromMemberId, String fromName, long toMemberId, String toName,
-                                 long amountPaise, Instant createdAt) {
+                                 long amountPaise, LocalDate paidOn, Instant createdAt) {
     }
 
     public record ReminderView(long groupId, String groupName, long memberId, String memberName, String email,

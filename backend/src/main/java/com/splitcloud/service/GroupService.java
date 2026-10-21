@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -61,12 +62,33 @@ public class GroupService {
         return new MemberView(member.getId(), member.getName(), member.getEmail(), member.getUpiId());
     }
 
+    public MemberView updateMember(long groupId, long memberId, AddMemberRequest request) {
+        Member member = requireMember(groupId, memberId);
+        member.update(request.name().trim(), blankToNull(request.email()), blankToNull(request.upiId()));
+        return new MemberView(member.getId(), member.getName(), member.getEmail(), member.getUpiId());
+    }
+
+    /** Removes a person added by mistake. Refused once they are part of any expense or payment. */
+    public void deleteMember(long groupId, long memberId) {
+        Member member = requireMember(groupId, memberId);
+        if (expenses.existsByPayerId(memberId) || expenses.countSharesOfMember(memberId) > 0
+                || settlements.existsByFromMemberIdOrToMemberId(memberId, memberId)) {
+            throw new ConflictException(member.getName()
+                    + " is part of expenses or payments in this group. Delete those first, then remove them.");
+        }
+        members.delete(member);
+    }
+
     // ---------- expenses ----------
 
     @Transactional(readOnly = true)
     public List<ExpenseView> listExpenses(long groupId) {
         requireGroup(groupId);
-        return expenses.findWithSplitsByGroupId(groupId).stream().map(GroupService::toView).toList();
+        return expenses.findWithSplitsByGroupId(groupId).stream()
+                .sorted(Comparator.comparing(Expense::getSpentOn).reversed()
+                        .thenComparing(Expense::getCreatedAt, Comparator.reverseOrder()))
+                .map(GroupService::toView)
+                .toList();
     }
 
     public ExpenseView addExpense(long groupId, CreateExpenseRequest request) {
@@ -89,17 +111,32 @@ public class GroupService {
 
         Map<Long, Long> shares = SplitCalculator.split(request.amountPaise(), request.splitType(), participants);
 
-        Expense expense = new Expense(group, payer, request.description().trim(),
-                request.amountPaise(), request.splitType());
+        String description = request.description().trim();
+        ExpenseCategory category = request.category() != null ? request.category()
+                : ExpenseCategory.guess(description);
+        LocalDate spentOn = request.spentOn() != null ? request.spentOn() : LocalDate.now(Expense.IST);
+        Expense expense = new Expense(group, payer, description, request.amountPaise(), request.splitType(),
+                category, spentOn);
         shares.forEach((memberId, share) -> expense.addSplit(groupMembers.get(memberId), share));
         return toView(expenses.save(expense));
     }
 
     public void deleteExpense(long groupId, long expenseId) {
-        Expense expense = expenses.findById(expenseId)
-                .filter(e -> e.getGroup().getId().equals(groupId))
-                .orElseThrow(() -> new NotFoundException("Expense " + expenseId + " not found in this group"));
-        expenses.delete(expense);
+        expenses.delete(requireExpense(groupId, expenseId));
+    }
+
+    public ExpenseView updateExpense(long groupId, long expenseId, UpdateExpenseRequest request) {
+        Expense expense = requireExpense(groupId, expenseId);
+        if (request.description() != null && !request.description().isBlank()) {
+            expense.setDescription(request.description().trim());
+        }
+        if (request.category() != null) {
+            expense.setCategory(request.category());
+        }
+        if (request.spentOn() != null) {
+            expense.setSpentOn(request.spentOn());
+        }
+        return toView(expense);
     }
 
     // ---------- balances and settlement ----------
@@ -168,14 +205,30 @@ public class GroupService {
         if (from.getId().equals(to.getId())) {
             throw new BadRequestException("A member cannot pay themselves");
         }
-        Settlement saved = settlements.save(new Settlement(group, from, to, request.amountPaise()));
+        LocalDate paidOn = request.paidOn() != null ? request.paidOn() : LocalDate.now(Expense.IST);
+        Settlement saved = settlements.save(new Settlement(group, from, to, request.amountPaise(), paidOn));
         return toView(saved);
+    }
+
+    /** Undo a payment marked by mistake (for example, the UPI transfer never went through). */
+    public void deleteSettlement(long groupId, long settlementId) {
+        settlements.delete(requireSettlement(groupId, settlementId));
+    }
+
+    public SettlementView updateSettlement(long groupId, long settlementId, UpdateSettlementRequest request) {
+        Settlement settlement = requireSettlement(groupId, settlementId);
+        settlement.setPaidOn(request.paidOn());
+        return toView(settlement);
     }
 
     @Transactional(readOnly = true)
     public List<SettlementView> listSettlements(long groupId) {
         requireGroup(groupId);
-        return settlements.findWithMembersByGroupId(groupId).stream().map(GroupService::toView).toList();
+        return settlements.findWithMembersByGroupId(groupId).stream()
+                .sorted(Comparator.comparing(Settlement::getPaidOn).reversed()
+                        .thenComparing(Settlement::getCreatedAt, Comparator.reverseOrder()))
+                .map(GroupService::toView)
+                .toList();
     }
 
     /** Everyone who currently owes money, across all groups. Feeds reminder jobs. */
@@ -206,30 +259,53 @@ public class GroupService {
         Member meera = members.save(new Member(group, "Meera", "meera@example.com", "meera@okhdfcbank"));
 
         List<Long> everyone = List.of(aarav.getId(), diya.getId(), kabir.getId(), meera.getId());
-        demoExpense(group, aarav, "Hotel booking", 1_200_000, SplitType.EQUAL, everyone, null);
-        demoExpense(group, diya, "Scooter rental", 240_000, SplitType.EQUAL, everyone, null);
+        LocalDate today = LocalDate.now(Expense.IST);
+        demoExpense(group, aarav, "Hotel booking", 1_200_000, SplitType.EQUAL, everyone, null,
+                ExpenseCategory.STAY, today.minusDays(2));
+        demoExpense(group, diya, "Scooter rental", 240_000, SplitType.EQUAL, everyone, null,
+                ExpenseCategory.TRAVEL, today.minusDays(2));
         demoExpense(group, kabir, "Beach shack dinner", 360_000, SplitType.SHARES,
-                List.of(aarav.getId(), diya.getId(), kabir.getId(), meera.getId()), List.of(2, 1, 2, 1));
+                List.of(aarav.getId(), diya.getId(), kabir.getId(), meera.getId()), List.of(2, 1, 2, 1),
+                ExpenseCategory.FOOD, today.minusDays(1));
         demoExpense(group, meera, "Cab to airport", 150_000, SplitType.EQUAL,
-                List.of(diya.getId(), kabir.getId(), meera.getId()), null);
+                List.of(diya.getId(), kabir.getId(), meera.getId()), null, ExpenseCategory.TRAVEL, today);
         return summary(group);
     }
 
     private void demoExpense(ExpenseGroup group, Member payer, String description, long amountPaise,
-                             SplitType type, List<Long> memberIds, List<Integer> weights) {
+                             SplitType type, List<Long> memberIds, List<Integer> weights,
+                             ExpenseCategory category, LocalDate spentOn) {
         List<ParticipantRequest> participants = new ArrayList<>();
         for (int i = 0; i < memberIds.size(); i++) {
             BigDecimal value = weights == null ? null : BigDecimal.valueOf(weights.get(i));
             participants.add(new ParticipantRequest(memberIds.get(i), value));
         }
         addExpense(group.getId(), new CreateExpenseRequest(description, amountPaise, payer.getId(), type,
-                participants));
+                participants, category, spentOn));
     }
 
     // ---------- helpers ----------
 
     private ExpenseGroup requireGroup(long groupId) {
         return groups.findById(groupId).orElseThrow(() -> new NotFoundException("Group " + groupId + " not found"));
+    }
+
+    private Member requireMember(long groupId, long memberId) {
+        return members.findById(memberId)
+                .filter(m -> m.getGroup().getId().equals(groupId))
+                .orElseThrow(() -> new NotFoundException("Person " + memberId + " not found in this group"));
+    }
+
+    private Expense requireExpense(long groupId, long expenseId) {
+        return expenses.findById(expenseId)
+                .filter(e -> e.getGroup().getId().equals(groupId))
+                .orElseThrow(() -> new NotFoundException("Expense " + expenseId + " not found in this group"));
+    }
+
+    private Settlement requireSettlement(long groupId, long settlementId) {
+        return settlements.findById(settlementId)
+                .filter(s -> s.getGroup().getId().equals(groupId))
+                .orElseThrow(() -> new NotFoundException("Payment " + settlementId + " not found in this group"));
     }
 
     private Map<Long, Member> membersById(long groupId) {
@@ -248,12 +324,14 @@ public class GroupService {
                 .map(s -> new SplitView(s.getMember().getId(), s.getMember().getName(), s.getSharePaise()))
                 .toList();
         return new ExpenseView(e.getId(), e.getDescription(), e.getAmountPaise(), e.getSplitType(),
+                e.getCategory(), e.getSpentOn(),
                 e.getPayer().getId(), e.getPayer().getName(), e.getCreatedAt(), splits);
     }
 
     private static SettlementView toView(Settlement s) {
         return new SettlementView(s.getId(), s.getFromMember().getId(), s.getFromMember().getName(),
-                s.getToMember().getId(), s.getToMember().getName(), s.getAmountPaise(), s.getCreatedAt());
+                s.getToMember().getId(), s.getToMember().getName(), s.getAmountPaise(), s.getPaidOn(),
+                s.getCreatedAt());
     }
 
     private static String blankToNull(String value) {

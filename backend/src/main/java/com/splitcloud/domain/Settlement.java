@@ -3,6 +3,7 @@ package com.splitcloud.domain;
 import jakarta.persistence.*;
 
 import java.time.Instant;
+import java.time.LocalDate;
 
 /** A recorded repayment: fromMember paid toMember outside the app (cash or UPI). */
 @Entity
@@ -31,14 +32,18 @@ public class Settlement {
     @Column(nullable = false, updatable = false)
     private Instant createdAt;
 
+    /** The day the repayment was made; editable, nullable for rows created before it existed. */
+    private LocalDate paidOn;
+
     protected Settlement() {
     }
 
-    public Settlement(ExpenseGroup group, Member fromMember, Member toMember, long amountPaise) {
+    public Settlement(ExpenseGroup group, Member fromMember, Member toMember, long amountPaise, LocalDate paidOn) {
         this.group = group;
         this.fromMember = fromMember;
         this.toMember = toMember;
         this.amountPaise = amountPaise;
+        this.paidOn = paidOn;
     }
 
     @PrePersist
@@ -68,5 +73,16 @@ public class Settlement {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public LocalDate getPaidOn() {
+        if (paidOn != null) {
+            return paidOn;
+        }
+        return createdAt == null ? LocalDate.now(Expense.IST) : LocalDate.ofInstant(createdAt, Expense.IST);
+    }
+
+    public void setPaidOn(LocalDate paidOn) {
+        this.paidOn = paidOn;
     }
 }

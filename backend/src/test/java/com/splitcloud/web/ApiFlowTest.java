@@ -107,4 +107,88 @@ class ApiFlowTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"));
     }
+
+    @Test
+    void peopleCanBeEditedAndRemovedOnlyWhenUnused() throws Exception {
+        long groupId = postJson("/api/groups", "{\"name\":\"Hostel\"}", 201).get("id").asLong();
+        long a = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Arjun\"}", 201).get("id").asLong();
+        long extra = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Typo\"}", 201).get("id").asLong();
+
+        mvc.perform(put("/api/groups/" + groupId + "/members/" + a).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Arjun K\",\"email\":\"arjun@example.com\",\"upiId\":\"arjun@okaxis\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Arjun K"))
+                .andExpect(jsonPath("$.upiId").value("arjun@okaxis"));
+
+        // A person with no expenses can be removed
+        mvc.perform(delete("/api/groups/" + groupId + "/members/" + extra)).andExpect(status().isNoContent());
+
+        // Once someone has paid for something, removing them is refused with 409
+        postJson("/api/groups/" + groupId + "/expenses", """
+                {"description":"Maggi","amountPaise":6000,"payerId":%d,"splitType":"EQUAL",
+                 "participants":[{"memberId":%d}]}
+                """.formatted(a, a), 201);
+        mvc.perform(delete("/api/groups/" + groupId + "/members/" + a)).andExpect(status().isConflict());
+    }
+
+    @Test
+    void expensesHaveEditableDatesAndCategories() throws Exception {
+        long groupId = postJson("/api/groups", "{\"name\":\"Weekend\"}", 201).get("id").asLong();
+        long a = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Ira\"}", 201).get("id").asLong();
+
+        JsonNode cab = postJson("/api/groups/" + groupId + "/expenses", """
+                {"description":"Cab to station","amountPaise":40000,"payerId":%d,"splitType":"EQUAL",
+                 "participants":[{"memberId":%d}],"spentOn":"2026-10-20"}
+                """.formatted(a, a), 201);
+        assertEquals("TRAVEL", cab.get("category").asText());
+        assertEquals("2026-10-20", cab.get("spentOn").asText());
+
+        postJson("/api/groups/" + groupId + "/expenses", """
+                {"description":"Lunch","amountPaise":30000,"payerId":%d,"splitType":"EQUAL",
+                 "participants":[{"memberId":%d}],"spentOn":"2026-10-21","category":"FOOD"}
+                """.formatted(a, a), 201);
+
+        // Newest date first
+        mvc.perform(get("/api/groups/" + groupId + "/expenses"))
+                .andExpect(jsonPath("$[0].description").value("Lunch"))
+                .andExpect(jsonPath("$[1].description").value("Cab to station"));
+
+        // Move the cab to a later day and change its category
+        mvc.perform(put("/api/groups/" + groupId + "/expenses/" + cab.get("id").asLong())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"spentOn\":\"2026-10-22\",\"category\":\"OTHER\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.spentOn").value("2026-10-22"))
+                .andExpect(jsonPath("$.category").value("OTHER"));
+
+        mvc.perform(get("/api/groups/" + groupId + "/expenses"))
+                .andExpect(jsonPath("$[0].description").value("Cab to station"));
+    }
+
+    @Test
+    void aPaymentMarkedByMistakeCanBeUndone() throws Exception {
+        long groupId = postJson("/api/groups", "{\"name\":\"Rent\"}", 201).get("id").asLong();
+        long a = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Neel\"}", 201).get("id").asLong();
+        long b = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Ojas\"}", 201).get("id").asLong();
+        postJson("/api/groups/" + groupId + "/expenses", """
+                {"description":"Wifi","amountPaise":100000,"payerId":%d,"splitType":"EQUAL",
+                 "participants":[{"memberId":%d},{"memberId":%d}]}
+                """.formatted(a, a, b), 201);
+
+        long paymentId = postJson("/api/groups/" + groupId + "/settlements",
+                "{\"fromMemberId\":%d,\"toMemberId\":%d,\"amountPaise\":50000}".formatted(b, a), 201)
+                .get("id").asLong();
+        mvc.perform(get("/api/groups/" + groupId + "/settlement-plan")).andExpect(jsonPath("$", hasSize(0)));
+
+        mvc.perform(put("/api/groups/" + groupId + "/settlements/" + paymentId)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"paidOn\":\"2026-10-23\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paidOn").value("2026-10-23"));
+
+        // The UPI transfer never went through: undo it, and Ojas owes again
+        mvc.perform(delete("/api/groups/" + groupId + "/settlements/" + paymentId)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/groups/" + groupId + "/settlement-plan"))
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].fromName").value("Ojas"));
+    }
 }

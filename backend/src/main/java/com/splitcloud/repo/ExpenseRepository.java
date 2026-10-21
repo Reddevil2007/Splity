@@ -26,4 +26,9 @@ public interface ExpenseRepository extends JpaRepository<Expense, Long> {
 
     @Query("select coalesce(sum(e.amountPaise), 0) from Expense e where e.group.id = :groupId")
     long totalSpentByGroupId(@Param("groupId") Long groupId);
+
+    boolean existsByPayerId(Long memberId);
+
+    @Query("select count(s) from ExpenseSplit s where s.member.id = :memberId")
+    long countSharesOfMember(@Param("memberId") Long memberId);
 }

@@ -46,6 +46,18 @@ public class GroupController {
         return service.addMember(groupId, request);
     }
 
+    @PutMapping("/{groupId}/members/{memberId}")
+    public MemberView updateMember(@PathVariable long groupId, @PathVariable long memberId,
+                                   @Valid @RequestBody AddMemberRequest request) {
+        return service.updateMember(groupId, memberId, request);
+    }
+
+    @DeleteMapping("/{groupId}/members/{memberId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteMember(@PathVariable long groupId, @PathVariable long memberId) {
+        service.deleteMember(groupId, memberId);
+    }
+
     @GetMapping("/{groupId}/expenses")
     public List<ExpenseView> listExpenses(@PathVariable long groupId) {
         return service.listExpenses(groupId);
@@ -55,6 +67,12 @@ public class GroupController {
     @ResponseStatus(HttpStatus.CREATED)
     public ExpenseView addExpense(@PathVariable long groupId, @Valid @RequestBody CreateExpenseRequest request) {
         return service.addExpense(groupId, request);
+    }
+
+    @PutMapping("/{groupId}/expenses/{expenseId}")
+    public ExpenseView updateExpense(@PathVariable long groupId, @PathVariable long expenseId,
+                                     @Valid @RequestBody UpdateExpenseRequest request) {
+        return service.updateExpense(groupId, expenseId, request);
     }
 
     @DeleteMapping("/{groupId}/expenses/{expenseId}")
@@ -83,5 +101,18 @@ public class GroupController {
     public SettlementView recordSettlement(@PathVariable long groupId,
                                            @Valid @RequestBody RecordSettlementRequest request) {
         return service.recordSettlement(groupId, request);
+    }
+
+    @PutMapping("/{groupId}/settlements/{settlementId}")
+    public SettlementView updateSettlement(@PathVariable long groupId, @PathVariable long settlementId,
+                                           @Valid @RequestBody UpdateSettlementRequest request) {
+        return service.updateSettlement(groupId, settlementId, request);
+    }
+
+    /** Undo a payment that was marked as paid by mistake. */
+    @DeleteMapping("/{groupId}/settlements/{settlementId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteSettlement(@PathVariable long groupId, @PathVariable long settlementId) {
+        service.deleteSettlement(groupId, settlementId);
     }
 }

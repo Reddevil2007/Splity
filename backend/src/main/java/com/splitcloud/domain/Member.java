@@ -53,4 +53,10 @@ public class Member {
     public String getUpiId() {
         return upiId;
     }
+
+    public void update(String name, String email, String upiId) {
+        this.name = name;
+        this.email = email;
+        this.upiId = upiId;
+    }
 }

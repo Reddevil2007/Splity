@@ -17,4 +17,6 @@ public interface SettlementRepository extends JpaRepository<Settlement, Long> {
             order by s.createdAt desc
             """)
     List<Settlement> findWithMembersByGroupId(@Param("groupId") Long groupId);
+
+    boolean existsByFromMemberIdOrToMemberId(Long fromMemberId, Long toMemberId);
 }

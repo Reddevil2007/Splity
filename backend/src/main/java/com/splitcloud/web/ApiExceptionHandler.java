@@ -1,6 +1,7 @@
 package com.splitcloud.web;
 
 import com.splitcloud.service.BadRequestException;
+import com.splitcloud.service.ConflictException;
 import com.splitcloud.service.NotFoundException;
 import com.splitcloud.web.Dtos.ErrorResponse;
 import org.springframework.http.HttpStatus;
@@ -30,6 +31,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> unreadable(HttpMessageNotReadableException ex) {
         return error(HttpStatus.BAD_REQUEST, "Request body is not valid JSON for this endpoint");
+    }
+
+    @ExceptionHandler(ConflictException.class)
+    public ResponseEntity<ErrorResponse> conflict(ConflictException ex) {
+        return error(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(NotFoundException.class)
