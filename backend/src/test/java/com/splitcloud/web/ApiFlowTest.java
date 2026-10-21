@@ -29,7 +29,7 @@ class ApiFlowTest {
     @Autowired
     private ObjectMapper json;
 
-    private JsonNode post(String url, String body, int expectedStatus) throws Exception {
+    private JsonNode postJson(String url, String body, int expectedStatus) throws Exception {
         MvcResult result = mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().is(expectedStatus))
                 .andReturn();
@@ -39,14 +39,14 @@ class ApiFlowTest {
 
     @Test
     void fullExpenseAndSettlementFlow() throws Exception {
-        long groupId = post("/api/groups", "{\"name\":\"Flat 4B\"}", 201).get("id").asLong();
-        long a = post("/api/groups/" + groupId + "/members",
+        long groupId = postJson("/api/groups", "{\"name\":\"Flat 4B\"}", 201).get("id").asLong();
+        long a = postJson("/api/groups/" + groupId + "/members",
                 "{\"name\":\"Asha\",\"email\":\"asha@example.com\",\"upiId\":\"asha@okaxis\"}", 201).get("id").asLong();
-        long b = post("/api/groups/" + groupId + "/members", "{\"name\":\"Bilal\"}", 201).get("id").asLong();
-        long c = post("/api/groups/" + groupId + "/members", "{\"name\":\"Chitra\"}", 201).get("id").asLong();
+        long b = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Bilal\"}", 201).get("id").asLong();
+        long c = postJson("/api/groups/" + groupId + "/members", "{\"name\":\"Chitra\"}", 201).get("id").asLong();
 
         // Asha pays 300.00 for everyone, split equally: Bilal and Chitra each owe her 100.00
-        post("/api/groups/" + groupId + "/expenses", """
+        postJson("/api/groups/" + groupId + "/expenses", """
                 {"description":"Groceries","amountPaise":30000,"payerId":%d,"splitType":"EQUAL",
                  "participants":[{"memberId":%d},{"memberId":%d},{"memberId":%d}]}
                 """.formatted(a, a, b, c), 201);
@@ -64,7 +64,7 @@ class ApiFlowTest {
                 .andExpect(jsonPath("$[0].upiLink", startsWith("upi://pay?pa=asha%40okaxis")));
 
         // Bilal pays Asha back; only Chitra should still owe money
-        post("/api/groups/" + groupId + "/settlements",
+        postJson("/api/groups/" + groupId + "/settlements",
                 "{\"fromMemberId\":%d,\"toMemberId\":%d,\"amountPaise\":10000}".formatted(b, a), 201);
 
         mvc.perform(get("/api/groups/" + groupId + "/settlement-plan"))
@@ -78,11 +78,11 @@ class ApiFlowTest {
 
     @Test
     void invalidInputIsRejectedWith400() throws Exception {
-        long groupId = post("/api/groups", "{\"name\":\"Trip\"}", 201).get("id").asLong();
-        JsonNode error = post("/api/groups", "{\"name\":\"  \"}", 400);
+        long groupId = postJson("/api/groups", "{\"name\":\"Trip\"}", 201).get("id").asLong();
+        JsonNode error = postJson("/api/groups", "{\"name\":\"  \"}", 400);
         assertEquals(400, error.get("status").asInt());
 
-        post("/api/groups/" + groupId + "/expenses", """
+        postJson("/api/groups/" + groupId + "/expenses", """
                 {"description":"Nothing","amountPaise":0,"payerId":1,"splitType":"EQUAL",
                  "participants":[{"memberId":1}]}
                 """, 400);
@@ -95,7 +95,7 @@ class ApiFlowTest {
 
     @Test
     void demoSeedAndHealthWork() throws Exception {
-        JsonNode demo = post("/api/demo", "", 201);
+        JsonNode demo = postJson("/api/demo", "", 201);
         assertEquals(4, demo.get("memberCount").asInt());
         assertEquals(1_950_000, demo.get("totalSpentPaise").asLong());
 

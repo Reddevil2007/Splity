@@ -21,7 +21,21 @@ jobs:
           java-version: "17"
           cache: maven
       - name: Compile, run unit and API tests, package WAR
-        run: mvn -B verify
+        run: mvn -B verify 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Report build errors
+        if: failure()
+        run: |
+          # Surface compiler and test failures as annotations on the run summary
+          grep -E "\[ERROR\]|FAILURE|Tests run:.*Fail|expected|Caused by|Exception" build.log \
+            | grep -v "Re-run Maven\|-> \[Help\|full stack trace\|For more information" \
+            | head -60 > errors.txt || true
+          for f in target/surefire-reports/*.txt; do
+            [ -f "$f" ] && grep -A6 -E "FAILURE|ERROR" "$f" | head -30 >> errors.txt
+          done
+          split -l 12 errors.txt chunk_
+          for c in chunk_*; do
+            echo "::error title=build::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' "$c")"
+          done
       - name: Upload WAR
         uses: actions/upload-artifact@v4
         with:
