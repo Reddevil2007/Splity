@@ -171,7 +171,7 @@ jobs:
         run: |
           # Surface the end of the failing step's output as annotations on the run page
           touch deploy.log
-          grep -iE "error|failed|denied|not allowed|quota|disallowed|conflict" deploy.log | head -40 > errors.txt || true
+          grep -A14 "^Error:\|│ Error:\|ERROR:" deploy.log | grep -v "^--$" | head -60 > errors.txt || true
           [ -s errors.txt ] || tail -40 deploy.log > errors.txt
           split -l 10 errors.txt chunk_ 2>/dev/null || true
           for c in chunk_*; do
