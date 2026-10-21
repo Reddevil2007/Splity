@@ -431,3 +431,21 @@ label { font-size: 0.9375rem; }
 .qr-upload .link-btn { font-size: 0.875rem; }
 .qr-status { color: var(--credit); font-weight: 600; overflow-wrap: anywhere; }
 .qr-upload .field-error { flex-basis: 100%; margin: 0; }
+
+/* Hero letters light up under the cursor and fade back slowly, leaving a short trail. */
+.hover-line { display: block; }
+.hover-word { display: inline-block; white-space: nowrap; margin-right: 0.24em; }
+.hover-word:last-child { margin-right: 0; }
+.hover-ch {
+  display: inline-block;
+  transition: color 900ms ease, transform 900ms cubic-bezier(0.2, 0.7, 0.2, 1), text-shadow 900ms ease;
+}
+.hover-ch:hover {
+  color: var(--marigold);
+  transform: translateY(-0.06em);
+  text-shadow: 0 0 28px rgba(242, 169, 0, 0.55);
+  transition-duration: 80ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hover-ch, .hover-ch:hover { transition: color 150ms ease; transform: none; }
+}
