@@ -198,24 +198,6 @@ export default function Landing({ onOpen, onTrySample }) {
         </figure>
       </main>
 
-      <section className="facts" aria-label="What SplitCloud does">
-        <div>
-          <strong>At most n − 1 payments</strong>
-          <p>Debts are simplified so a group of n people never needs more than n − 1 transfers.</p>
-        </div>
-        <div>
-          <strong>Exact to the paisa</strong>
-          <p>Split equally, by exact amounts, percentages or shares. Every split adds up exactly.</p>
-        </div>
-        <div>
-          <strong>Pay with any UPI app</strong>
-          <p>Each payment comes with a UPI link and QR code. Money goes straight to your friend.</p>
-        </div>
-      </section>
-
-      <footer className="landing-foot">
-        Built on Azure App Service, Azure Database for PostgreSQL and Azure Storage. Deployed with Terraform and GitHub Actions.
-      </footer>
     </div>
   )
 }
