@@ -101,13 +101,32 @@ jobs:
             -backend-config="key=splitcloud.tfstate" \
             -backend-config="use_oidc=true"
 
+      - name: Clean up a diagnostic setting left half-created by an interrupted run
+        working-directory: infra
+        run: |
+          if ! terraform state list | grep -q "azurerm_monitor_diagnostic_setting.api"; then
+            APP_ID=$(terraform state show -no-color azurerm_linux_web_app.api 2>/dev/null | awk -F'"' '/^ *id *=/{print $2; exit}')
+            if [ -n "$APP_ID" ]; then
+              az monitor diagnostic-settings delete --name send-to-log-analytics --resource "$APP_ID" 2>/dev/null || true
+            fi
+          fi
+
       - name: Terraform plan
         working-directory: infra
-        run: terraform plan -input=false -no-color -out=tfplan 2>&1 | tee -a ../deploy.log; exit ${PIPESTATUS[0]}
+        run: terraform plan -input=false -no-color 2>&1 | tee -a ../deploy.log; exit ${PIPESTATUS[0]}
 
       - name: Terraform apply (first run takes about 10-15 minutes)
         working-directory: infra
-        run: terraform apply -input=false -no-color tfplan 2>&1 | tee -a ../deploy.log; exit ${PIPESTATUS[0]}
+        run: |
+          # Azure management calls occasionally drop mid-request; one retry covers that.
+          for attempt in 1 2; do
+            if terraform apply -auto-approve -input=false -no-color 2>&1 | tee -a ../deploy.log; [ "${PIPESTATUS[0]}" -eq 0 ]; then
+              exit 0
+            fi
+            echo "apply attempt $attempt failed"
+            sleep 30
+          done
+          exit 1
 
       - name: Read Terraform outputs
         working-directory: infra
