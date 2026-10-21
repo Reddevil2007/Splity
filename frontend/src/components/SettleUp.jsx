@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import { api } from '../api.js'
 import { formatPaise } from '../money.js'
+import { dayColors, formatDay } from '../categories.js'
 
 function UpiQr({ link }) {
   const [src, setSrc] = useState(null)
@@ -15,7 +16,7 @@ function UpiQr({ link }) {
   return src ? <img className="qr" src={src} width="168" height="168" alt="UPI payment QR code" /> : null
 }
 
-function Transfer({ t, groupId, onRecorded }) {
+function Transfer({ t, groupId, onChanged }) {
   const [showQr, setShowQr] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
@@ -28,7 +29,7 @@ function Transfer({ t, groupId, onRecorded }) {
         toMemberId: t.toMemberId,
         amountPaise: t.amountPaise,
       })
-      await onRecorded()
+      await onChanged()
     } catch (e) {
       setError(e.message)
       setSaving(false)
@@ -67,9 +68,58 @@ function Transfer({ t, groupId, onRecorded }) {
   )
 }
 
-const dateFormat = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+/** A recorded payment: change the date it was paid, or undo it if the money never arrived. */
+function PaymentRow({ s, groupId, color, onChanged }) {
+  const [editing, setEditing] = useState(false)
+  const [paidOn, setPaidOn] = useState(s.paidOn)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
 
-export default function SettleUp({ groupId, plan, settlements, onRecorded }) {
+  async function run(action) {
+    setBusy(true)
+    try {
+      await action()
+      await onChanged()
+    } catch (e) {
+      setError(e.message)
+      setBusy(false)
+    }
+  }
+
+  function undo() {
+    if (!window.confirm(`Undo "${s.fromName} paid ${s.toName} ${formatPaise(s.amountPaise)}"? They will owe it again.`)) return
+    run(() => api.deleteSettlement(groupId, s.id))
+  }
+
+  function saveDate(event) {
+    event.preventDefault()
+    run(() => api.updateSettlement(groupId, s.id, { paidOn }))
+  }
+
+  return (
+    <li className="payment-row" style={{ '--day': color }}>
+      <span className="day-pill">{formatDay(s.paidOn)}</span>
+      <span>{s.fromName} paid {s.toName}</span>
+      <span className="figure">{formatPaise(s.amountPaise)}</span>
+      {editing ? (
+        <form className="inline-date" onSubmit={saveDate}>
+          <input type="date" aria-label="Date paid" value={paidOn} onChange={(e) => setPaidOn(e.target.value)} required />
+          <button type="submit" className="btn" disabled={busy}>Save</button>
+          <button type="button" className="link-btn" onClick={() => { setEditing(false); setPaidOn(s.paidOn) }}>Cancel</button>
+        </form>
+      ) : (
+        <span className="row-actions">
+          <button type="button" className="link-btn" onClick={() => setEditing(true)}>Change date</button>
+          <button type="button" className="link-btn danger" onClick={undo} disabled={busy}>Undo</button>
+        </span>
+      )}
+      {error && <p className="field-error" role="alert">{error}</p>}
+    </li>
+  )
+}
+
+export default function SettleUp({ groupId, plan, settlements, onChanged }) {
+  const colors = dayColors(settlements.map((s) => s.paidOn))
   return (
     <div className="settle">
       {plan.length === 0 ? (
@@ -83,7 +133,7 @@ export default function SettleUp({ groupId, plan, settlements, onRecorded }) {
           </p>
           <ul className="transfers">
             {plan.map((t) => (
-              <Transfer key={`${t.fromMemberId}-${t.toMemberId}`} t={t} groupId={groupId} onRecorded={onRecorded} />
+              <Transfer key={`${t.fromMemberId}-${t.toMemberId}`} t={t} groupId={groupId} onChanged={onChanged} />
             ))}
           </ul>
         </>
@@ -92,13 +142,10 @@ export default function SettleUp({ groupId, plan, settlements, onRecorded }) {
       {settlements.length > 0 && (
         <div className="history">
           <h2 className="card-title">Payments recorded</h2>
+          <p className="muted history-note">Marked a payment that didn't actually go through? Undo it and they'll owe the amount again.</p>
           <ul>
             {settlements.map((s) => (
-              <li key={s.id}>
-                <span>{s.fromName} paid {s.toName}</span>
-                <span className="figure">{formatPaise(s.amountPaise)}</span>
-                <span className="muted">{dateFormat.format(new Date(s.createdAt))}</span>
-              </li>
+              <PaymentRow key={s.id} s={s} groupId={groupId} color={colors[s.paidOn]} onChanged={onChanged} />
             ))}
           </ul>
         </div>

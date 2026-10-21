@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { formatPaise } from '../money.js'
 import MemberForm from './MemberForm.jsx'
+import MemberEditor from './MemberEditor.jsx'
+import SpendingChart from './SpendingChart.jsx'
 import ExpenseForm from './ExpenseForm.jsx'
 import ExpenseList from './ExpenseList.jsx'
 import Balances from './Balances.jsx'
@@ -21,6 +23,7 @@ export default function GroupView({ groupId, onChanged }) {
   const [settlements, setSettlements] = useState([])
   const [tab, setTab] = useState('expenses')
   const [error, setError] = useState(null)
+  const [editingMemberId, setEditingMemberId] = useState(null)
 
   const reload = useCallback(async () => {
     try {
@@ -51,6 +54,11 @@ export default function GroupView({ groupId, onChanged }) {
     onChanged()
   }
 
+  async function afterMemberEdit(changed) {
+    setEditingMemberId(null)
+    if (changed) await afterChange()
+  }
+
   if (error && !group) return <div className="banner" role="alert">{error}</div>
   if (!group) return <p className="muted">Loading group…</p>
 
@@ -65,12 +73,22 @@ export default function GroupView({ groupId, onChanged }) {
           </p>
         </div>
         <div className="people">
-          <ul className="chips" aria-label="Members">
+          <ul className="chips" aria-label="Members (click a name to edit)">
             {group.members.map((m) => (
-              <li key={m.id} className="chip" title={m.upiId ?? 'No UPI ID'}>{m.name}</li>
+              <li key={m.id}>
+                <button type="button" className={`chip ${editingMemberId === m.id ? 'is-active' : ''}`}
+                  title={`Edit ${m.name}`} onClick={() => setEditingMemberId(editingMemberId === m.id ? null : m.id)}>
+                  {m.name}
+                </button>
+              </li>
             ))}
           </ul>
-          <MemberForm groupId={groupId} onAdded={afterChange} />
+          {editingMemberId ? (
+            <MemberEditor key={editingMemberId} groupId={groupId}
+              member={group.members.find((m) => m.id === editingMemberId)} onDone={afterMemberEdit} />
+          ) : (
+            <MemberForm groupId={groupId} onAdded={afterChange} />
+          )}
         </div>
       </div>
 
@@ -100,12 +118,15 @@ export default function GroupView({ groupId, onChanged }) {
             {/* key resets the form when people are added, so new members start ticked */}
             <ExpenseForm key={group.members.map((m) => m.id).join(',')} groupId={groupId}
               members={group.members} onAdded={afterChange} />
-            <ExpenseList groupId={groupId} expenses={expenses} onDeleted={afterChange} />
+            <div className="expenses-side">
+              <SpendingChart expenses={expenses} />
+              <ExpenseList groupId={groupId} expenses={expenses} onChanged={afterChange} />
+            </div>
           </div>
         )}
         {tab === 'balances' && <Balances balances={balances} />}
         {tab === 'settle' && (
-          <SettleUp groupId={groupId} plan={plan} settlements={settlements} onRecorded={afterChange} />
+          <SettleUp groupId={groupId} plan={plan} settlements={settlements} onChanged={afterChange} />
         )}
       </div>
     </section>

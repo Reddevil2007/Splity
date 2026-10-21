@@ -2,6 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from './api.js'
 import { formatPaise } from './money.js'
 import GroupView from './components/GroupView.jsx'
+import Landing from './components/Landing.jsx'
+
+// Two screens, picked by the URL hash: "#/app" is the app, anything else the landing page.
+function currentRoute() {
+  return window.location.hash.startsWith('#/app') ? 'app' : 'landing'
+}
 
 export default function App() {
   const [groups, setGroups] = useState([])
@@ -9,6 +15,16 @@ export default function App() {
   const [newName, setNewName] = useState('')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [route, setRoute] = useState(currentRoute)
+
+  useEffect(() => {
+    const onHashChange = () => {
+      setRoute(currentRoute())
+      window.scrollTo(0, 0)
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
 
   const loadGroups = useCallback(async () => {
     try {
@@ -53,13 +69,25 @@ export default function App() {
     }
   }
 
+  if (route === 'landing') {
+    return (
+      <Landing
+        onOpen={() => { window.location.hash = '#/app' }}
+        onTrySample={async () => {
+          window.location.hash = '#/app'
+          await createDemo()
+        }}
+      />
+    )
+  }
+
   return (
     <div className="shell">
       <header className="masthead">
-        <div className="brand">
+        <a className="brand brand-link" href="#/" title="SplitCloud home">
           <span className="brand-mark" aria-hidden="true" />
           <span className="brand-name">SplitCloud</span>
-        </div>
+        </a>
         <p className="tagline">Shared expenses, settled in the fewest payments.</p>
       </header>
 

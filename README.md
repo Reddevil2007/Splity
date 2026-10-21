@@ -87,11 +87,13 @@ cd frontend && npm install && npm run dev     # app on http://localhost:5173 (pr
 | GET / POST | `/api/groups` | List or create groups |
 | GET | `/api/groups/{id}` | Group with its members |
 | POST | `/api/groups/{id}/members` | Add a member (name, email, UPI ID) |
+| PUT / DELETE | `/api/groups/{id}/members/{memberId}` | Edit a member, or remove one who has no expenses (409 otherwise) |
 | GET / POST | `/api/groups/{id}/expenses` | List or add expenses (EQUAL, EXACT, PERCENT, SHARES) |
-| DELETE | `/api/groups/{id}/expenses/{expenseId}` | Remove an expense |
+| PUT / DELETE | `/api/groups/{id}/expenses/{expenseId}` | Change an expense's description, category or date, or remove it |
 | GET | `/api/groups/{id}/balances` | Net position per member |
 | GET | `/api/groups/{id}/settlement-plan` | Minimal payments to settle, with UPI links |
 | GET / POST | `/api/groups/{id}/settlements` | Recorded repayments |
+| PUT / DELETE | `/api/groups/{id}/settlements/{settlementId}` | Change the date a payment was made, or undo it |
 | GET | `/api/reminders/pending` | Everyone who owes money |
 | GET | `/api/health` | Application and database health |
 | POST | `/api/demo` | Create the sample "Goa Trip" group |

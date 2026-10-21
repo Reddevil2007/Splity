@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api.js'
 import { parseRupees } from '../money.js'
+import { CATEGORIES, category, guessCategory, todayIso } from '../categories.js'
 
 const SPLIT_TYPES = [
   { id: 'EQUAL', label: 'Equally', hint: null },
@@ -16,6 +17,8 @@ export default function ExpenseForm({ groupId, members, onAdded }) {
   const [splitType, setSplitType] = useState('EQUAL')
   const [included, setIncluded] = useState(() => Object.fromEntries(members.map((m) => [m.id, true])))
   const [values, setValues] = useState({})
+  const [cat, setCat] = useState('AUTO')
+  const [spentOn, setSpentOn] = useState(todayIso)
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
 
@@ -63,10 +66,13 @@ export default function ExpenseForm({ groupId, members, onAdded }) {
         payerId: Number(payerId),
         splitType,
         participants,
+        category: cat === 'AUTO' ? null : cat,
+        spentOn,
       })
       setDescription('')
       setAmount('')
       setValues({})
+      setCat('AUTO')
       setError(null)
       await onAdded()
     } catch (e) {
@@ -94,6 +100,20 @@ export default function ExpenseForm({ groupId, members, onAdded }) {
           <label htmlFor="exp-payer">Paid by</label>
           <select id="exp-payer" value={payerId} onChange={(e) => setPayerId(e.target.value)}>
             {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="two-col">
+        <div>
+          <label htmlFor="exp-date">Date</label>
+          <input id="exp-date" type="date" value={spentOn} onChange={(e) => setSpentOn(e.target.value)} required />
+        </div>
+        <div>
+          <label htmlFor="exp-cat">Category</label>
+          <select id="exp-cat" value={cat} onChange={(e) => setCat(e.target.value)}>
+            <option value="AUTO">Auto: {category(guessCategory(description)).label}</option>
+            {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </div>
       </div>
