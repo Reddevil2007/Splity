@@ -1,0 +1,52 @@
+# Tears down every AWS resource Terraform created, to stop spending lab credit.
+# Run it manually from the Actions tab and type "destroy" to confirm.
+name: Destroy AWS infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to delete all SplitCloud resources'
+        required: true
+
+env:
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+  TF_VAR_lab_mode: ${{ vars.LAB_MODE || 'true' }}
+
+jobs:
+  destroy:
+    name: Terraform destroy
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'destroy'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+          terraform_wrapper: false
+
+      # The configuration references the WAR file; a placeholder is enough to plan a destroy.
+      - name: Placeholder WAR
+        run: mkdir -p backend/target && touch backend/target/splitcloud.war
+
+      - name: Terraform destroy
+        working-directory: infra
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          terraform init -input=false \
+            -backend-config="bucket=splitcloud-tfstate-$ACCOUNT_ID" \
+            -backend-config="key=splitcloud/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="use_lockfile=true"
+          terraform destroy -auto-approve -input=false

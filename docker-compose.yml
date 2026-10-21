@@ -1,0 +1,18 @@
+# Local development database only. Matches the defaults in backend/src/main/resources/application.properties.
+#   docker compose up -d
+#   cd backend && mvn spring-boot:run          (API on http://localhost:8080)
+#   cd frontend && npm install && npm run dev  (app on http://localhost:5173)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: splitcloud
+      POSTGRES_USER: splitcloud
+      POSTGRES_PASSWORD: splitcloud
+    ports:
+      - "5432:5432"
+    volumes:
+      - splitcloud-data:/var/lib/postgresql/data
+
+volumes:
+  splitcloud-data:

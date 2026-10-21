@@ -1,0 +1,130 @@
+#!/bin/bash
+# SplitCloud application server bootstrap (runs once, at first boot, via cloud-init).
+#   1. installs Java 17 and Apache Tomcat 10
+#   2. writes the database settings into Tomcat's environment
+#   3. installs a pull-based deploy loop: every 30 s the instance checks S3 for a
+#      new WAR and, if the etag changed, drops it into Tomcat's webapps folder
+set -euxo pipefail
+exec > >(tee -a /var/log/splitcloud-setup.log) 2>&1
+
+TOMCAT_VERSION="${tomcat_version}"
+
+# ---- 1 GB swap: Spring Boot plus Tomcat is tight on a 1 GB t3.micro ----
+if [ ! -f /swapfile ]; then
+  fallocate -l 1G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# ---- Java 17 ----
+dnf install -y java-17-amazon-corretto-headless tar gzip
+JAVA_DIR=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
+
+# ---- Tomcat 10 ----
+id tomcat >/dev/null 2>&1 || useradd -r -m -U -d /opt/tomcat -s /sbin/nologin tomcat
+mkdir -p /opt/tomcat /opt/splitcloud
+curl -fsSL --retry 5 --retry-delay 5 -o /tmp/tomcat.tar.gz \
+  "https://archive.apache.org/dist/tomcat/tomcat-10/v$TOMCAT_VERSION/bin/apache-tomcat-$TOMCAT_VERSION.tar.gz" \
+  || curl -fsSL --retry 5 --retry-delay 5 -o /tmp/tomcat.tar.gz \
+  "https://dlcdn.apache.org/tomcat/tomcat-10/v$TOMCAT_VERSION/bin/apache-tomcat-$TOMCAT_VERSION.tar.gz"
+tar -xzf /tmp/tomcat.tar.gz -C /opt/tomcat --strip-components=1
+rm -rf /opt/tomcat/webapps/*
+
+# Database settings, read by Spring Boot from the environment.
+cat > /opt/tomcat/bin/setenv.sh <<'EOF'
+export JAVA_OPTS="-Xms256m -Xmx512m -Djava.security.egd=file:/dev/./urandom"
+export DB_URL="jdbc:postgresql://${db_host}:${db_port}/${db_name}"
+export DB_USER="${db_user}"
+export DB_PASSWORD="${db_password}"
+EOF
+echo "export JAVA_HOME=$JAVA_DIR" >> /opt/tomcat/bin/setenv.sh
+chmod 750 /opt/tomcat/bin/setenv.sh
+
+# Wait for PostgreSQL before starting Tomcat. Matters when a lab session
+# restarts the EC2 and RDS instances at the same time.
+cat > /opt/splitcloud/wait-for-db.sh <<'EOF'
+#!/bin/bash
+for attempt in $(seq 1 90); do
+  if timeout 3 bash -c "</dev/tcp/${db_host}/${db_port}" 2>/dev/null; then
+    exit 0
+  fi
+  echo "waiting for database (attempt $attempt)"
+  sleep 10
+done
+echo "database still unreachable, starting Tomcat anyway"
+EOF
+
+# Pull-based deployment: compare the WAR's etag in S3 with the deployed one.
+cat > /opt/splitcloud/pull-deploy.sh <<'EOF'
+#!/bin/bash
+set -uo pipefail
+export AWS_DEFAULT_REGION="${region}"
+STATE=/opt/splitcloud/deployed-etag
+ETAG=$(aws s3api head-object --bucket "${artifact_bucket}" --key "${war_key}" --query ETag --output text 2>/dev/null) || exit 0
+if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$ETAG" ]; then
+  exit 0
+fi
+aws s3 cp "s3://${artifact_bucket}/${war_key}" /opt/tomcat/temp/incoming.war --only-show-errors || exit 1
+chown tomcat:tomcat /opt/tomcat/temp/incoming.war
+mv -f /opt/tomcat/temp/incoming.war /opt/tomcat/webapps/ROOT.war
+echo "$ETAG" > "$STATE"
+logger -t splitcloud-deploy "deployed new release, etag $ETAG"
+EOF
+chmod 755 /opt/splitcloud/*.sh
+chown -R tomcat:tomcat /opt/tomcat
+
+cat > /etc/systemd/system/tomcat.service <<'EOF'
+[Unit]
+Description=Apache Tomcat 10 running SplitCloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=tomcat
+Group=tomcat
+Environment=CATALINA_HOME=/opt/tomcat
+Environment=CATALINA_BASE=/opt/tomcat
+Environment=CATALINA_PID=/opt/tomcat/temp/tomcat.pid
+ExecStartPre=/opt/splitcloud/wait-for-db.sh
+ExecStart=/opt/tomcat/bin/startup.sh
+ExecStop=/opt/tomcat/bin/shutdown.sh
+PIDFile=/opt/tomcat/temp/tomcat.pid
+TimeoutStartSec=1000
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/splitcloud-deploy.service <<'EOF'
+[Unit]
+Description=Fetch the latest SplitCloud WAR from S3
+
+[Service]
+Type=oneshot
+ExecStart=/opt/splitcloud/pull-deploy.sh
+EOF
+
+cat > /etc/systemd/system/splitcloud-deploy.timer <<'EOF'
+[Unit]
+Description=Check S3 for a new SplitCloud release every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# First deploy now, then hand over to systemd.
+/opt/splitcloud/pull-deploy.sh || true
+systemctl daemon-reload
+systemctl enable --now tomcat.service
+systemctl enable --now splitcloud-deploy.timer
+echo "SplitCloud bootstrap finished"

@@ -1,0 +1,153 @@
+# Continuous Deployment: every push to main (or a manual "Run workflow") builds
+# the app, provisions/updates the AWS infrastructure with Terraform, publishes
+# the frontend and releases the backend.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+#   (Learner Lab: copy all three from "AWS Details"; they expire when the lab session ends)
+# Optional repository variables:
+#   ALERT_EMAIL  email address for alarms and the daily dues digest
+#   LAB_MODE     "false" for a normal AWS account (default "true" for Learner Lab)
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+  TF_VAR_lab_mode: ${{ vars.LAB_MODE || 'true' }}
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check AWS credentials are set
+        env:
+          KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::Add AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN as repository secrets, then re-run."
+            exit 1
+          fi
+
+      # ---------- build ----------
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Build backend WAR (runs the tests too)
+        working-directory: backend
+        run: mvn -B package
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ---------- infrastructure ----------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create the Terraform state bucket if it does not exist
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="splitcloud-tfstate-$ACCOUNT_ID"
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
+            aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
+            aws s3api put-public-access-block --bucket "$BUCKET" \
+              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          fi
+          echo "TF_STATE_BUCKET=$BUCKET" >> "$GITHUB_ENV"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=splitcloud/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform plan
+        working-directory: infra
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply (first run takes about 15-20 minutes)
+        working-directory: infra
+        run: terraform apply -input=false tfplan
+
+      - name: Read Terraform outputs
+        working-directory: infra
+        run: |
+          {
+            echo "APP_URL=$(terraform output -raw app_url)"
+            echo "FRONTEND_BUCKET=$(terraform output -raw frontend_bucket)"
+            echo "DISTRIBUTION_ID=$(terraform output -raw cloudfront_distribution_id)"
+            echo "DASHBOARD_URL=$(terraform output -raw dashboard_url)"
+          } >> "$GITHUB_ENV"
+
+      # ---------- release ----------
+      - name: Publish frontend to S3
+        run: |
+          # Hashed asset files never change, so browsers and CloudFront may cache them for a year.
+          aws s3 sync frontend/dist "s3://$FRONTEND_BUCKET" --delete \
+            --exclude index.html --cache-control "public,max-age=31536000,immutable"
+          # index.html must always be revalidated so users pick up new asset names.
+          aws s3 cp frontend/dist/index.html "s3://$FRONTEND_BUCKET/index.html" \
+            --cache-control "no-cache" --content-type "text/html"
+
+      - name: Invalidate CloudFront cache for index.html
+        run: aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/" "/index.html"
+
+      # The new WAR was uploaded by Terraform; the EC2 instance picks it up within 30 s.
+      - name: Smoke test (waits for the API to report healthy)
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS "$APP_URL/api/health" | grep -q '"status":"UP"'; then
+              echo "API healthy after $attempt checks"
+              exit 0
+            fi
+            echo "waiting for API ($attempt/60)"
+            sleep 15
+          done
+          echo "::error::API did not become healthy within 15 minutes. Check the EC2 instance (log: /var/log/splitcloud-setup.log)."
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## SplitCloud deployment"
+            echo ""
+            echo "- App: ${APP_URL:-not available}"
+            echo "- CloudWatch dashboard: ${DASHBOARD_URL:-not available}"
+          } >> "$GITHUB_STEP_SUMMARY"
