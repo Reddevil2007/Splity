@@ -68,6 +68,7 @@ jobs:
 
       - name: Register resource providers and create the Terraform state store
         run: |
+          exec > >(tee -a deploy.log) 2>&1
           for p in Microsoft.Web Microsoft.DBforPostgreSQL Microsoft.Insights Microsoft.OperationalInsights \
                    Microsoft.AlertsManagement Microsoft.Storage Microsoft.Network; do
             az provider register --namespace "$p" --wait
@@ -92,7 +93,8 @@ jobs:
       - name: Terraform init
         working-directory: infra
         run: |
-          terraform init -input=false \
+          exec > >(tee -a ../deploy.log) 2>&1
+          terraform init -input=false -no-color \
             -backend-config="resource_group_name=$STATE_RG" \
             -backend-config="storage_account_name=$STATE_SA" \
             -backend-config="container_name=tfstate" \
@@ -101,11 +103,11 @@ jobs:
 
       - name: Terraform plan
         working-directory: infra
-        run: terraform plan -input=false -out=tfplan
+        run: terraform plan -input=false -no-color -out=tfplan 2>&1 | tee -a ../deploy.log; exit ${PIPESTATUS[0]}
 
       - name: Terraform apply (first run takes about 10-15 minutes)
         working-directory: infra
-        run: terraform apply -input=false tfplan
+        run: terraform apply -input=false -no-color tfplan 2>&1 | tee -a ../deploy.log; exit ${PIPESTATUS[0]}
 
       - name: Read Terraform outputs
         working-directory: infra
@@ -122,7 +124,8 @@ jobs:
       - name: Deploy the WAR to App Service (Tomcat 10.1)
         run: |
           az webapp deploy --resource-group "$RESOURCE_GROUP" --name "$WEB_APP" \
-            --src-path backend/target/splitcloud.war --type war --restart true
+            --src-path backend/target/splitcloud.war --type war --restart true 2>&1 | tee -a deploy.log
+          exit ${PIPESTATUS[0]}
 
       - uses: actions/setup-node@v4
         with:
@@ -139,6 +142,7 @@ jobs:
 
       - name: Publish frontend to the storage static website
         run: |
+          exec > >(tee -a deploy.log) 2>&1
           KEY=$(az storage account keys list --account-name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query "[0].value" -o tsv)
           # Hashed asset files never change, so browsers may cache them for a year.
           az storage blob upload-batch --account-name "$STORAGE_ACCOUNT" --account-key "$KEY" \
@@ -161,6 +165,19 @@ jobs:
           done
           echo "::error::API did not become healthy within 10 minutes. Check App Service > Log stream in the Azure portal."
           exit 1
+
+      - name: Report errors
+        if: failure()
+        run: |
+          # Surface the end of the failing step's output as annotations on the run page
+          touch deploy.log
+          grep -iE "error|failed|denied|not allowed|quota|disallowed|conflict" deploy.log | head -40 > errors.txt || true
+          [ -s errors.txt ] || tail -40 deploy.log > errors.txt
+          split -l 10 errors.txt chunk_ 2>/dev/null || true
+          for c in chunk_*; do
+            [ -f "$c" ] && echo "::error title=deploy::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' "$c")"
+          done
+          true
 
       - name: Summary
         if: always()
